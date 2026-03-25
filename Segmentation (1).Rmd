@@ -1,0 +1,182 @@
+---
+title: "Segmentation"
+output: html_document
+date: "2025-08-25"
+---
+
+```{r setup, include=FALSE}
+setwd("/Users/danieltsai/Documents/DSTA 2025/Segmentation")
+library(showtext)
+showtext_auto()
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(readr)
+library(pheatmap)
+library(kableExtra)
+
+library(cluster)
+library(factoextra)
+```
+
+load data
+```{r}
+setwd("/Users/danieltsai/Documents/DSTA 2025/Segmentation")
+
+members <- read_csv("members.csv")
+sales <- read_csv("sales-2024.csv")
+```
+
+Question 1
+
+1-1, 1-2
+```{r}
+# User-Item matrix
+user_product <- sales %>%
+  group_by(member_id, product) %>%
+  summarise(qty = sum(quantity), .groups = "drop") %>%
+  tidyr::pivot_wider(names_from = product, values_from = qty, values_fill = 0)
+
+#Item Correlation matrix
+product_matrix <- as.matrix(user_product[,-1])
+cor_mat <- cor(product_matrix, method = "pearson")
+
+#Heatmap
+pheatmap(cor_mat, main = "Correlation Heatmap")
+
+```
+
+Question 2:
+
+2-2
+```{r}
+set.seed(3567)
+
+#Silhouette method
+sil <- sapply(2:10, function(k){
+  km <- kmeans(product_matrix, centers=k, nstart=20)
+  ss <- silhouette(km$cluster, dist(product_matrix))
+  mean(ss[,3])
+})
+plot(2:10, sil, type="b", xlab="K", ylab="Average Silhouette Width")
+
+```
+2-3
+```{r}
+# if #K =5 
+set.seed(3567)
+km_res <- kmeans(product_matrix, centers=5, nstart=25)
+
+#Every member has a group
+members_cluster <- members %>%
+  left_join(data.frame(member_id=user_product$member_id, cluster=km_res$cluster), by="member_id")
+
+head(members_cluster)
+```
+2-2
+```{r}
+sales_with_cluster <- sales %>%
+  left_join(members_cluster %>% select(member_id, cluster),
+            by = "member_id")
+
+# Top 5 Products in every group
+top5_products <- sales_with_cluster %>%
+  group_by(cluster, product) %>%
+  summarise(total_qty = sum(quantity), .groups = "drop") %>%
+  arrange(cluster, desc(total_qty)) %>%
+  group_by(cluster) %>%
+  slice_max(order_by = total_qty, n = 5)
+
+top5_products
+```
+```{r}
+ggplot(members_cluster, aes(x = factor(cluster), fill = gender)) +
+  geom_bar(position = "fill") +
+  labs(title = "Gender Proportion by Cluster",
+       x = "Cluster", y = "Proportion") +
+  scale_y_continuous(labels = scales::percent)
+```
+age distribution
+```{r}
+members_cluster <- members_cluster %>%
+  mutate(age = as.numeric(difftime(Sys.Date(), as.Date(birthday), units = "days"))/365)
+
+ggplot(members_cluster, aes(x = age, fill = factor(cluster))) +
+  geom_histogram(bins = 30, alpha = 0.6, position = "identity") +
+  labs(title = "Age Distribution by Cluster", x = "Age", y = "Count")
+
+```
+card level
+```{r}
+ggplot(members_cluster, aes(x = factor(cluster), fill = card_level)) +
+  geom_bar(position = "fill") +
+  labs(title = "Membership Tier Distribution by Cluster",
+       x = "Cluster", y = "Proportion") +
+  scale_y_continuous(labels = scales::percent)
+```
+```{r}
+# 性別比例
+gender_tab <- members_cluster %>%
+  count(cluster, gender) %>%
+  group_by(cluster) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup() %>%
+  select(cluster, gender, prop) %>%
+  pivot_wider(names_from = cluster, values_from = prop) %>%
+  mutate(Variable = paste0("Gender: ", gender)) %>%
+  select(Variable, everything(), -gender) %>%
+  mutate(across(where(is.numeric), ~ sprintf("%.3f", .)))
+
+# 年齡 (平均 ± SD)
+age_tab <- members_cluster %>%
+  group_by(cluster) %>%
+  summarise(
+    mean = mean(age, na.rm = TRUE),
+    sd   = sd(age, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(value = paste0(round(mean, 1), " ± ", round(sd, 1))) %>%
+  select(cluster, value) %>%
+  pivot_wider(names_from = cluster, values_from = value) %>%
+  mutate(Variable = "Age") %>%
+  select(Variable, everything())
+
+# 會員卡等級
+card_tab <- members_cluster %>%
+  count(cluster, card_level) %>%
+  group_by(cluster) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup() %>%
+  select(cluster, card_level, prop) %>%
+  pivot_wider(names_from = cluster, values_from = prop) %>%
+  mutate(Variable = paste0("Card: ", card_level)) %>%
+  select(Variable, everything(), -card_level) %>%
+  mutate(across(where(is.numeric), ~ sprintf("%.3f", .)))
+
+top3_products <- top5_products %>%
+  group_by(cluster) %>%
+  slice_max(order_by = total_qty, n = 3) %>%
+  summarise(Top3 = paste(product, collapse = ", "),
+            .groups = "drop") %>%
+  mutate(Variable = "Top 3 Products") %>%
+  pivot_wider(names_from = cluster, values_from = Top3) %>%
+  select(Variable, everything())
+# 合併
+summary_tab <- bind_rows(gender_tab, age_tab, card_tab)
+summary_tab2 <- bind_rows(summary_tab, top3_products)
+
+kable(summary_tab2,
+      format = "html",
+      booktabs = TRUE,
+      caption = "Cluster Profile with Top 3 Products") %>%
+  kable_styling(full_width = FALSE,
+                bootstrap_options = c("striped", "hover"))
+summary_tab2 <- summary_tab2 %>%
+  rename_with(~ paste0("Cluster ", .), -Variable)
+summary_tab2
+```
+
+
